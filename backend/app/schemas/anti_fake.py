@@ -7,7 +7,8 @@ from datetime import datetime
 from pydantic import BaseModel, field_validator
 
 # 防伪码格式: 排除易混淆字符 O/0/I/1/L
-ANTI_FAKE_CODE_PATTERN = re.compile(r'^[A-HJ-NP-Z2-9\-]{10,32}$')
+# A-H(无I), J-K(无L), M-N(无O), P-Z(无O), 2-9(无0/1), 连字符
+ANTI_FAKE_CODE_PATTERN = re.compile(r'^[ABCDEFGHJKMNPQRSTUVWXYZ23456789-]{10,32}$')
 
 
 class VerifyRequest(BaseModel):
