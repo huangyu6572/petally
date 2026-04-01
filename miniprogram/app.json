@@ -1,0 +1,62 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/anti-fake/scan/index",
+    "pages/anti-fake/result/index",
+    "pages/anti-fake/history/index",
+    "pages/skin/capture/index",
+    "pages/skin/analyzing/index",
+    "pages/skin/result/index",
+    "pages/skin/history/index",
+    "pages/skin/trend/index",
+    "pages/promotion/list/index",
+    "pages/promotion/detail/index",
+    "pages/promotion/coupon/index",
+    "pages/promotion/recommend/index",
+    "pages/profile/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "Petal 花瓣美妆",
+    "navigationBarBackgroundColor": "#FF69B4",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#FFF0F5"
+  },
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#FF69B4",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页",
+        "iconPath": "assets/icons/home.png",
+        "selectedIconPath": "assets/icons/home-active.png"
+      },
+      {
+        "pagePath": "pages/anti-fake/scan/index",
+        "text": "防伪查询",
+        "iconPath": "assets/icons/scan.png",
+        "selectedIconPath": "assets/icons/scan-active.png"
+      },
+      {
+        "pagePath": "pages/skin/capture/index",
+        "text": "肌肤分析",
+        "iconPath": "assets/icons/ai.png",
+        "selectedIconPath": "assets/icons/ai-active.png"
+      },
+      {
+        "pagePath": "pages/promotion/list/index",
+        "text": "好物推荐",
+        "iconPath": "assets/icons/gift.png",
+        "selectedIconPath": "assets/icons/gift-active.png"
+      },
+      {
+        "pagePath": "pages/profile/index",
+        "text": "我的",
+        "iconPath": "assets/icons/user.png",
+        "selectedIconPath": "assets/icons/user-active.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}
