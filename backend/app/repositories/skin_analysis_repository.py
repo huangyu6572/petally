@@ -8,7 +8,7 @@ F4 — 肌肤分析 Repository
 """
 import json
 from typing import Optional, List, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 
@@ -43,7 +43,7 @@ class SkinAnalysisRepository:
             image_url=image_url,
             analysis_type=analysis_type,
             status=STATUS_PROCESSING,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.utcnow(),
         )
         self.db.add(record)
         await self.db.flush()
@@ -136,7 +136,7 @@ class SkinAnalysisRepository:
         查询最近 N 天内已完成的分析评分，按时间升序。
         返回 [(date_str, overall_score), ...]
         """
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+        since = datetime.utcnow() - timedelta(days=days)
         stmt = (
             select(SkinAnalysis.created_at, SkinAnalysis.overall_score)
             .where(
@@ -155,7 +155,7 @@ class SkinAnalysisRepository:
 
     async def count_today(self, user_id: int) -> int:
         """统计用户今日已提交的分析次数（含所有状态）。"""
-        today = datetime.now(timezone.utc).replace(
+        today = datetime.utcnow().replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         stmt = select(func.count()).where(

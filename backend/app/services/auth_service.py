@@ -2,7 +2,7 @@
 Auth Service — 微信登录 & Token 刷新
 """
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -88,8 +88,8 @@ class AuthService:
         if user is None:
             user = User(
                 openid=openid,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
             )
             self.db.add(user)
             await self.db.flush()

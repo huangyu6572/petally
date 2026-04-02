@@ -117,11 +117,13 @@ class AntiFakeService:
             raise AntiFakeCodeNotFound(code)
 
         now = datetime.now(timezone.utc)
+        # asyncpg 不接受 offset-aware datetime 写入 TIMESTAMP WITHOUT TIME ZONE 列
+        now_naive = now.replace(tzinfo=None)
         is_first = not af_code.is_verified
 
         if is_first:
             # 首次查询：写 verified_at / verified_by
-            await self.repo.mark_first_verified(af_code.id, user_id, now)
+            await self.repo.mark_first_verified(af_code.id, user_id, now_naive)
             query_count = 1
         else:
             # 非首次：递增计数
