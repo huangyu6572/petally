@@ -1,0 +1,49 @@
+<!-- pages/skin/trend/index.wxml -->
+<view class="container">
+  <!-- 时间范围选择 -->
+  <view class="range-bar">
+    <text class="range-item {{days === 7 ? 'active' : ''}}" bindtap="setRange" data-days="7">近7天</text>
+    <text class="range-item {{days === 30 ? 'active' : ''}}" bindtap="setRange" data-days="30">近30天</text>
+    <text class="range-item {{days === 90 ? 'active' : ''}}" bindtap="setRange" data-days="90">近90天</text>
+  </view>
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <view class="loading-spinner" />
+  </view>
+
+  <block wx:elif="{{trendData && trendData.length > 0}}">
+    <!-- 简易折线图（数值列表代替） -->
+    <view class="chart-card">
+      <text class="chart-title">综合评分趋势</text>
+      <view class="score-bars">
+        <view class="bar-item" wx:for="{{trendData}}" wx:key="date">
+          <view class="bar-fill" style="height: {{item.overall_score * 2}}rpx; background: {{item.overall_score >= 80 ? '#2ecc71' : item.overall_score >= 60 ? '#f39c12' : '#e74c3c'}};"></view>
+          <text class="bar-score">{{item.overall_score}}</text>
+          <text class="bar-date">{{item.short_date}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 统计汇总 -->
+    <view class="stats-card">
+      <view class="stat-item">
+        <text class="stat-value">{{stats.avg_score}}</text>
+        <text class="stat-label">平均评分</text>
+      </view>
+      <view class="stat-item">
+        <text class="stat-value {{stats.trend >= 0 ? 'up' : 'down'}}">{{stats.trend >= 0 ? '+' : ''}}{{stats.trend}}</text>
+        <text class="stat-label">趋势变化</text>
+      </view>
+      <view class="stat-item">
+        <text class="stat-value">{{stats.total}}</text>
+        <text class="stat-label">分析次数</text>
+      </view>
+    </view>
+  </block>
+
+  <view wx:elif="{{!loading}}" class="empty-wrap">
+    <text class="empty-icon">📈</text>
+    <text class="empty-text">暂无趋势数据</text>
+    <text class="empty-sub">进行多次肌肤分析后可查看趋势</text>
+  </view>
+</view>

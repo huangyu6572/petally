@@ -1,0 +1,15 @@
+<!-- pages/login/index.wxml -->
+<view class="container">
+  <view class="logo-area">
+    <image src="/assets/icons/logo.png" class="logo" mode="aspectFit" />
+    <text class="app-name">PetAlly</text>
+    <text class="slogan">宠物好物 · 专业守护</text>
+  </view>
+
+  <view class="login-area">
+    <button class="login-btn" bindtap="handleLogin" loading="{{loading}}">
+      <text>微信一键登录</text>
+    </button>
+    <text class="hint">登录即代表同意《用户协议》和《隐私政策》</text>
+  </view>
+</view>

@@ -1,0 +1,50 @@
+<!-- pages/promotion/detail/index.wxml -->
+<view class="container" wx:if="{{detail}}">
+  <!-- 商品图 -->
+  <image src="{{detail.image_url || '/assets/icons/placeholder.png'}}" mode="aspectFill" class="main-img" />
+
+  <!-- 价格区域 -->
+  <view class="price-bar">
+    <view>
+      <text class="price-now">¥{{detail.discounted_price}}</text>
+      <text class="price-original" wx:if="{{detail.original_price}}">¥{{detail.original_price}}</text>
+    </view>
+    <view class="discount-badge" wx:if="{{detail.discount_percentage}}">
+      <text>{{detail.discount_percentage}}折</text>
+    </view>
+  </view>
+
+  <!-- 商品信息 -->
+  <view class="info-block">
+    <text class="brand-tag">{{detail.brand}}</text>
+    <text class="product-name">{{detail.product_name}}</text>
+    <text class="product-desc">{{detail.description}}</text>
+  </view>
+
+  <!-- 优惠券 -->
+  <view class="coupon-block" wx:if="{{detail.coupon_info}}">
+    <view class="coupon-header">
+      <text class="coupon-title">优惠券</text>
+      <text class="coupon-amount">减{{detail.coupon_info.discount_amount}}元</text>
+    </view>
+    <text class="coupon-rule">{{detail.coupon_info.usage_conditions}}</text>
+    <button class="btn-coupon" bindtap="claimCoupon" loading="{{claiming}}" disabled="{{claimed}}">
+      {{claimed ? '已领取' : '立即领取'}}
+    </button>
+  </view>
+
+  <!-- 有效期 -->
+  <view class="meta-block" wx:if="{{detail.valid_until}}">
+    <text class="meta-item">有效期至：{{detail.valid_until}}</text>
+  </view>
+
+  <!-- 底部操作栏 -->
+  <view class="bottom-bar">
+    <button class="btn-share" open-type="share">分享给好友</button>
+    <button class="btn-buy" bindtap="goBuy">立即购买</button>
+  </view>
+</view>
+
+<view wx:elif="{{loading}}" class="loading-wrap">
+  <view class="loading-spinner" />
+</view>

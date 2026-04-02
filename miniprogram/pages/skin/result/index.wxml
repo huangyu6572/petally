@@ -1,0 +1,62 @@
+<!-- pages/skin/result/index.wxml -->
+<view class="container">
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <view class="loading-spinner" />
+    <text>加载报告...</text>
+  </view>
+
+  <block wx:elif="{{result}}">
+    <!-- 评分卡 -->
+    <view class="score-card">
+      <view class="score-circle">
+        <text class="score-num">{{result.overall_score}}</text>
+        <text class="score-label">综合评分</text>
+      </view>
+      <view class="score-info">
+        <text class="pet-type">分析类型：{{result.analysis_type}}</text>
+        <text class="analysis-time">{{result.created_at}}</text>
+      </view>
+    </view>
+
+    <!-- 问题列表 -->
+    <view class="section-card" wx:if="{{result.issues && result.issues.length > 0}}">
+      <text class="card-title">发现问题</text>
+      <view class="issue-item" wx:for="{{result.issues}}" wx:key="index">
+        <view class="issue-dot severity-{{item.severity}}" />
+        <view class="issue-content">
+          <text class="issue-name">{{item.name}}</text>
+          <text class="issue-desc">{{item.description}}</text>
+        </view>
+        <text class="issue-severity">{{item.severity === 'high' ? '⚠️ 严重' : item.severity === 'medium' ? '⚡ 中度' : '💡 轻微'}}</text>
+      </view>
+    </view>
+
+    <!-- 建议 -->
+    <view class="section-card" wx:if="{{result.suggestions && result.suggestions.length > 0}}">
+      <text class="card-title">护理建议</text>
+      <view class="suggestion-item" wx:for="{{result.suggestions}}" wx:key="index">
+        <text class="suggestion-icon">•</text>
+        <text class="suggestion-text">{{item}}</text>
+      </view>
+    </view>
+
+    <!-- 推荐产品 -->
+    <view class="section-card" wx:if="{{recommendations && recommendations.length > 0}}">
+      <text class="card-title">推荐产品</text>
+      <view class="promo-item" wx:for="{{recommendations}}" wx:key="id"
+            bindtap="goToPromoDetail" data-id="{{item.id}}">
+        <image src="{{item.image_url || '/assets/icons/placeholder.png'}}" mode="aspectFill" class="promo-img" />
+        <view class="promo-info">
+          <text class="promo-name">{{item.product_name}}</text>
+          <text class="promo-price">¥{{item.discounted_price}}</text>
+        </view>
+        <text class="arrow">›</text>
+      </view>
+    </view>
+
+    <view class="actions">
+      <button class="btn-primary" bindtap="goCapture">重新分析</button>
+      <button class="btn-secondary" bindtap="goToHistory">历史报告</button>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,35 @@
+<!-- pages/skin/capture/index.wxml -->
+<view class="container">
+  <view class="header-tips">
+    <text class="tips-title">📸 拍摄宠物肌肤照片</text>
+    <text class="tips-desc">请确保光线充足，对准患处拍摄清晰照片</text>
+  </view>
+
+  <!-- 预览区 -->
+  <view class="preview-area" bindtap="chooseImage">
+    <image wx:if="{{imagePath}}" src="{{imagePath}}" mode="aspectFill" class="preview-img" />
+    <view wx:else class="placeholder">
+      <text class="placeholder-icon">📷</text>
+      <text class="placeholder-text">点击选择照片</text>
+    </view>
+  </view>
+
+  <!-- 分析类型选择 -->
+  <view class="type-section">
+    <text class="type-label">分析类型</text>
+    <view class="type-list">
+      <view class="type-item {{analysisType === item.value ? 'selected' : ''}}"
+            wx:for="{{analysisTypes}}" wx:key="value"
+            bindtap="selectType" data-value="{{item.value}}">
+        <text>{{item.label}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="actions">
+    <button class="btn-primary" bindtap="startAnalysis" loading="{{uploading}}" disabled="{{!imagePath}}">
+      开始 AI 分析
+    </button>
+    <button class="btn-secondary" bindtap="goToHistory">查看历史报告</button>
+  </view>
+</view>

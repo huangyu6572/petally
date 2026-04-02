@@ -1,0 +1,46 @@
+<!-- pages/index/index.wxml -->
+<view class="container">
+  <!-- 顶部欢迎区 -->
+  <view class="header">
+    <image class="logo" src="/assets/icons/logo.png" mode="aspectFit" />
+    <text class="welcome">PetAlly · 宠物好物平台</text>
+  </view>
+
+  <!-- 功能入口卡片 -->
+  <view class="features">
+    <view class="feature-card" bindtap="goToAntiFake">
+      <image src="/assets/icons/anti-fake.png" mode="aspectFit" class="feature-icon" />
+      <text class="feature-title">防伪查询</text>
+      <text class="feature-desc">扫码验证商品真伪</text>
+    </view>
+
+    <view class="feature-card" bindtap="goToSkin">
+      <image src="/assets/icons/skin.png" mode="aspectFit" class="feature-icon" />
+      <text class="feature-title">肌肤分析</text>
+      <text class="feature-desc">AI 智能分析宠物肌肤</text>
+    </view>
+
+    <view class="feature-card" bindtap="goToPromotion">
+      <image src="/assets/icons/promotion.png" mode="aspectFit" class="feature-icon" />
+      <text class="feature-title">好物推荐</text>
+      <text class="feature-desc">精选宠物产品优惠</text>
+    </view>
+  </view>
+
+  <!-- 最近动态 -->
+  <view class="section">
+    <text class="section-title">最新推荐</text>
+    <block wx:for="{{recentPromotions}}" wx:key="id">
+      <view class="promo-item" bindtap="goToPromoDetail" data-id="{{item.id}}">
+        <image src="{{item.image_url || '/assets/icons/placeholder.png'}}" mode="aspectFill" class="promo-img" />
+        <view class="promo-info">
+          <text class="promo-name">{{item.product_name}}</text>
+          <text class="promo-price">¥{{item.discounted_price}}</text>
+        </view>
+      </view>
+    </block>
+    <view wx:if="{{recentPromotions.length === 0}}" class="empty-tip">
+      <text>暂无推荐，去好物推荐看看吧～</text>
+    </view>
+  </view>
+</view>

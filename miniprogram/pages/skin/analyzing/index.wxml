@@ -1,0 +1,21 @@
+<!-- pages/skin/analyzing/index.wxml -->
+<view class="container">
+  <view class="analyzing-wrap">
+    <view class="pulse-circle">
+      <view class="pulse-inner">
+        <text class="ai-icon">🤖</text>
+      </view>
+    </view>
+    <text class="analyzing-title">AI 正在分析中...</text>
+    <text class="analyzing-hint">{{hint}}</text>
+    <view class="progress-bar">
+      <view class="progress-fill" style="width: {{progress}}%;" />
+    </view>
+    <text class="progress-text">{{progress}}%</text>
+  </view>
+
+  <view wx:if="{{failed}}" class="fail-wrap">
+    <text class="fail-text">分析超时，请重试</text>
+    <button class="btn-primary" bindtap="goBack">重新拍摄</button>
+  </view>
+</view>

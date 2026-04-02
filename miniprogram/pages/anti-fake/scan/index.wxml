@@ -1,0 +1,22 @@
+<!-- pages/anti-fake/scan/index.wxml -->
+<view class="container">
+  <view class="hero">
+    <image src="/assets/icons/scan-bg.png" mode="aspectFit" class="hero-img" />
+    <text class="hero-title">扫码验真伪</text>
+    <text class="hero-desc">扫描商品包装上的防伪二维码或条形码，即可验证真伪</text>
+  </view>
+
+  <view class="actions">
+    <button class="btn-primary" bindtap="handleScan" loading="{{scanning}}">
+      <text>📷  立即扫码</text>
+    </button>
+    <button class="btn-secondary" bindtap="goToHistory">查看历史记录</button>
+  </view>
+
+  <view class="tips">
+    <text class="tips-title">使用提示</text>
+    <text class="tip-item">· 确保二维码/条形码清晰可见</text>
+    <text class="tip-item">· 支持商品包装上所有防伪码</text>
+    <text class="tip-item">· 每次查询结果自动保存</text>
+  </view>
+</view>

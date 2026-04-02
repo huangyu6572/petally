@@ -11,6 +11,10 @@ const authApi = {
   wechatLogin(code) {
     return post('/auth/wechat-login', { code });
   },
+  /** 刷新 token */
+  refreshToken(refreshToken) {
+    return post('/auth/refresh', { refresh_token: refreshToken });
+  },
 };
 
 // ========== 防伪查询模块 ==========
@@ -18,6 +22,11 @@ const antiFakeApi = {
   /** 查询防伪码 */
   verify(code) {
     return post('/anti-fake/verify', { code });
+  },
+
+  /** 获取单条查询结果 */
+  getResult(analysisId) {
+    return get(`/anti-fake/results/${analysisId}`);
   },
 
   /** 获取查询历史 */

@@ -1,0 +1,63 @@
+<!-- pages/profile/index.wxml -->
+<view class="container">
+  <!-- 头部用户信息 -->
+  <view class="user-header">
+    <image class="avatar" src="{{userInfo.avatar || '/assets/icons/default-avatar.png'}}" mode="aspectFill" />
+    <view class="user-info">
+      <text class="nickname">{{userInfo.nickname || '宠物主人'}}</text>
+      <text class="openid-hint">ID: {{shortId}}</text>
+    </view>
+  </view>
+
+  <!-- 统计数据 -->
+  <view class="stats-bar">
+    <view class="stat-item" bindtap="goToAntiFakeHistory">
+      <text class="stat-num">{{stats.antiFakeCount}}</text>
+      <text class="stat-label">防伪查询</text>
+    </view>
+    <view class="stat-divider" />
+    <view class="stat-item" bindtap="goToSkinHistory">
+      <text class="stat-num">{{stats.skinCount}}</text>
+      <text class="stat-label">肌肤分析</text>
+    </view>
+    <view class="stat-divider" />
+    <view class="stat-item" bindtap="goToCoupon">
+      <text class="stat-num">{{stats.couponCount}}</text>
+      <text class="stat-label">优惠券</text>
+    </view>
+  </view>
+
+  <!-- 菜单列表 -->
+  <view class="menu-group">
+    <view class="menu-item" bindtap="goToAntiFakeHistory">
+      <text class="menu-icon">🔍</text>
+      <text class="menu-title">防伪查询记录</text>
+      <text class="arrow">›</text>
+    </view>
+    <view class="menu-item" bindtap="goToSkinHistory">
+      <text class="menu-icon">📋</text>
+      <text class="menu-title">肌肤分析报告</text>
+      <text class="arrow">›</text>
+    </view>
+    <view class="menu-item" bindtap="goToSkinTrend">
+      <text class="menu-icon">📈</text>
+      <text class="menu-title">肌肤健康趋势</text>
+      <text class="arrow">›</text>
+    </view>
+    <view class="menu-item" bindtap="goToCoupon">
+      <text class="menu-icon">🎟️</text>
+      <text class="menu-title">我的优惠券</text>
+      <text class="arrow">›</text>
+    </view>
+  </view>
+
+  <view class="menu-group">
+    <view class="menu-item" bindtap="handleLogout">
+      <text class="menu-icon">🚪</text>
+      <text class="menu-title logout-text">退出登录</text>
+      <text class="arrow">›</text>
+    </view>
+  </view>
+
+  <text class="version">版本 v1.0.0</text>
+</view>
