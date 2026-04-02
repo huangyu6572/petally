@@ -45,7 +45,25 @@ def create_app() -> FastAPI:
     # Register API routes
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-    @app.get("/health", tags=["运维"])
+    @app.get("/", tags=["运维"], summary="API 根路径")
+    async def root():
+        return {
+            "name": settings.PROJECT_NAME,
+            "version": settings.VERSION,
+            "description": "Petal — 微信小程序美妆平台 API",
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "health": "/health",
+            "api_prefix": settings.API_V1_PREFIX,
+            "endpoints": {
+                "auth":       f"{settings.API_V1_PREFIX}/auth",
+                "anti_fake":  f"{settings.API_V1_PREFIX}/anti-fake",
+                "skin":       f"{settings.API_V1_PREFIX}/skin",
+                "promotions": f"{settings.API_V1_PREFIX}/promotions",
+            },
+        }
+
+    @app.get("/health", tags=["运维"], summary="健康检查")
     async def health_check():
         return {"status": "ok", "version": settings.VERSION}
 
