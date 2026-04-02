@@ -7,14 +7,19 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.api.v1.router import api_router
+from app.core.dependencies import engine
+from app.models.models import Base
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup & shutdown events."""
-    # Startup: init DB pool, Redis connection, etc.
+    # Startup: create tables if not exist (dev mode)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
     # Shutdown: close connections
+    await engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -39,6 +44,10 @@ def create_app() -> FastAPI:
 
     # Register API routes
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+    @app.get("/health", tags=["运维"])
+    async def health_check():
+        return {"status": "ok", "version": settings.VERSION}
 
     return app
 
