@@ -1,861 +1,720 @@
 """
-Anti-Fake Module — 完整测试套件
+Anti-Fake Module v2 — 完整测试套件
 涵盖:
-  F1 - 防伪码格式校验 & 输入安全（VerifyRequest Validator）
-  F2 - 防伪码查询核心（缓存命中/未命中/首次/非首次/穿透防护）
-  F3 - 查询频率限制（用户维度 / IP 维度）
-  F4 - 查询历史记录（Repository 分页）
-  F5 - 批量导入（正常 / 超限 / 去重）
+  F1 - 条形码查询（OpenBeautyService: 缓存命中/未命中/OBF 无数据/OBF 超时/脏数据）
+  F2 - 品牌防伪跳转（BrandVerifyService: 品牌列表/中英文匹配/key 匹配/code_pattern）
+  F3 - BarcodeRequest Schema 校验（合法/非法条形码）
+  F4 - BrandVerifyRequest Schema 校验
+  F5 - API 端点集成测试（/barcode, /brand-verify, /brands, /history）
 """
 import json
 import pytest
-from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.anti_fake_service import (
-    AntiFakeService,
-    RateLimitExceeded,
-    AntiFakeCodeNotFound,
-    InvalidCodeFormat,
-    AntiFakeCodeSuspicious,
-    CACHE_KEY_VERIFY,
-    CACHE_KEY_EMPTY,
-    CACHE_KEY_RATE_USER,
-    CACHE_KEY_RATE_IP,
+import httpx
+
+from app.services.open_beauty_service import (
+    OpenBeautyService,
+    OBF_API_BASE,
+    CACHE_KEY_BARCODE,
+    CACHE_TTL_HIT,
+    CACHE_TTL_MISS,
 )
-from app.repositories.anti_fake_repository import (
-    AntiFakeRepository,
-    BatchSizeExceeded,
-    QUERY_COUNT_WARNING,
-    QUERY_COUNT_SUSPICIOUS,
-    CODE_STATUS_VERIFIED,
-    CODE_STATUS_WARNING,
-    CODE_STATUS_SUSPICIOUS,
+from app.services.brand_verify_service import (
+    BrandVerifyService,
+    BUILTIN_BRANDS,
 )
-from app.schemas.anti_fake import VerifyRequest
-from app.models.models import AntiFakeCode, Product
+from app.schemas.anti_fake import (
+    BarcodeRequest,
+    BrandVerifyRequest,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_product(id=1001, name="花瓣精华水", brand="Petal",
-                 category="护肤", price=Decimal("299.00")):
-    p = Product()
-    p.id = id
-    p.name = name
-    p.brand = brand
-    p.category = category
-    p.price = price
-    p.cover_image = f"https://cdn.example.com/products/{id}.jpg"
-    return p
+SAMPLE_OBF_RESPONSE = {
+    "status": 1,
+    "product": {
+        "code": "3337875597371",
+        "product_name": "CeraVe Moisturizing Cream",
+        "brands": "CeraVe",
+        "categories": "Moisturizers",
+        "image_url": "https://images.openfoodfacts.org/images/products/333/787/559/7371/front_fr.8.400.jpg",
+        "ingredients_text": "Aqua, Glycerin, Cetearyl Alcohol",
+        "labels": "Dermatologist Tested",
+        "quantity": "50ml",
+        "packaging": "Tube",
+    },
+}
+
+SAMPLE_OBF_NOT_FOUND = {"status": 0, "status_verbose": "product not found"}
+
+SAMPLE_OBF_NO_NAME = {
+    "status": 1,
+    "product": {
+        "code": "0000000000001",
+        "product_name": "",
+        "brands": "Unknown",
+    },
+}
+
+SAMPLE_BARCODE = "3337875597371"
+SAMPLE_MISSING_BARCODE = "9999999999999"
 
 
-def make_af_code(
-    id=1,
-    code="PET-2B2G4R-A7X9K3M2-Q",
-    product_id=1001,
-    is_verified=False,
-    query_count=0,
-    status="unused",
-    verified_at=None,
-    verified_by=None,
-    batch_no="B20260301",
-    product=None,
-):
-    af = AntiFakeCode()
-    af.id = id
-    af.code = code
-    af.product_id = product_id
-    af.is_verified = is_verified
-    af.query_count = query_count
-    af.status = status
-    af.verified_at = verified_at
-    af.verified_by = verified_by
-    af.batch_no = batch_no
-    af.product = product or make_product()
-    return af
+def make_redis_mock():
+    redis = AsyncMock()
+    redis.get.return_value = None
+    redis.setex.return_value = True
+    return redis
 
 
-def make_service(redis=None, db=None):
-    if db is None:
-        db = AsyncMock()
+def make_obf_service(redis=None):
     if redis is None:
-        redis = AsyncMock()
-        redis.get.return_value = None
-        redis.exists.return_value = 0
-        redis.incr.return_value = 1
-        redis.ttl.return_value = 55
-    return AntiFakeService(db=db, redis=redis)
+        redis = make_redis_mock()
+    return OpenBeautyService(redis=redis)
+
+
+def make_brand_service(redis=None):
+    if redis is None:
+        redis = make_redis_mock()
+    return BrandVerifyService(redis=redis)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F1 — 防伪码格式校验 & 输入安全
+# F1 — OpenBeautyService 条形码查询
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestVerifyRequestValidation:
-    """AF-U: VerifyRequest Schema 格式校验"""
+class TestOpenBeautyServiceCacheHit:
+    """OBF-CACHE: Redis 缓存命中测试"""
 
-    def test_valid_code_accepted(self):
-        """AF-U-01 前置: 标准格式防伪码通过校验"""
-        req = VerifyRequest(code="PET-2B2G4R-A7X9K3M2-Q")
-        assert req.code == "PET-2B2G4R-A7X9K3M2-Q"
+    @pytest.mark.asyncio
+    async def test_cache_hit_returns_product(self):
+        """OBF-CACHE-01: 缓存中有产品数据 → 直接返回，不调用 OBF API"""
+        redis = make_redis_mock()
+        cached_product = {
+            "barcode": SAMPLE_BARCODE,
+            "product_name": "CeraVe Moisturizing Cream",
+            "brand": "CeraVe",
+            "category": "Moisturizers",
+            "source": "Open Beauty Facts",
+        }
+        redis.get.return_value = json.dumps(cached_product)
 
-    def test_lowercase_auto_uppercased(self):
-        """小写字母自动转大写"""
-        req = VerifyRequest(code="pet-2b2g4r-a7x9k3m2-q")
-        assert req.code == "PET-2B2G4R-A7X9K3M2-Q"
+        svc = make_obf_service(redis)
+        result = await svc.lookup_barcode(SAMPLE_BARCODE)
 
-    def test_whitespace_stripped(self):
-        """AF-I-06 前置: 前后空格自动裁剪"""
-        req = VerifyRequest(code="  PET-2B2G4R-A7X9K3M2-Q  ")
-        assert req.code == "PET-2B2G4R-A7X9K3M2-Q"
+        assert result is not None
+        assert result["product_name"] == "CeraVe Moisturizing Cream"
+        assert result["brand"] == "CeraVe"
+        # 不应再调用 setex（缓存已存在）
+        redis.setex.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_sentinel_returns_none(self):
+        """OBF-CACHE-02: 缓存中存在 __MISS__ 哨兵值 → 返回 None"""
+        redis = make_redis_mock()
+        redis.get.return_value = '"__MISS__"'
+
+        svc = make_obf_service(redis)
+        result = await svc.lookup_barcode(SAMPLE_MISSING_BARCODE)
+
+        assert result is None
+        redis.setex.assert_not_called()
+
+
+class TestOpenBeautyServiceApiFetch:
+    """OBF-API: OBF API 调用测试"""
+
+    @pytest.mark.asyncio
+    async def test_api_success_returns_product(self):
+        """OBF-API-01: OBF 返回产品数据 → 解析并缓存"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = SAMPLE_OBF_RESPONSE
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.return_value = mock_response
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode(SAMPLE_BARCODE)
+
+        assert result is not None
+        assert result["barcode"] == SAMPLE_BARCODE
+        assert result["product_name"] == "CeraVe Moisturizing Cream"
+        assert result["brand"] == "CeraVe"
+        assert result["category"] == "Moisturizers"
+        assert result["ingredients"] == "Aqua, Glycerin, Cetearyl Alcohol"
+        assert result["labels"] == "Dermatologist Tested"
+        assert result["quantity"] == "50ml"
+        assert result["source"] == "Open Beauty Facts"
+        assert SAMPLE_BARCODE in result["source_url"]
+
+        # 验证写入了 HIT 缓存
+        redis.setex.assert_called_once()
+        call_args = redis.setex.call_args
+        assert SAMPLE_BARCODE in str(call_args)
+        assert call_args[0][1] == CACHE_TTL_HIT
+
+    @pytest.mark.asyncio
+    async def test_api_product_not_found(self):
+        """OBF-API-02: OBF 返回 status=0 → 返回 None，写 MISS 缓存"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = SAMPLE_OBF_NOT_FOUND
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.return_value = mock_response
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode(SAMPLE_MISSING_BARCODE)
+
+        assert result is None
+        # 验证写入了 MISS 缓存
+        redis.setex.assert_called_once()
+        call_args = redis.setex.call_args
+        assert call_args[0][1] == CACHE_TTL_MISS
+        assert "__MISS__" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_api_product_empty_name_treated_as_not_found(self):
+        """OBF-API-03: 产品名为空的脏数据 → 视为未找到"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = SAMPLE_OBF_NO_NAME
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.return_value = mock_response
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode("0000000000001")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_api_http_error_returns_none(self):
+        """OBF-API-04: OBF 返回非 200 → 返回 None"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.return_value = mock_response
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode(SAMPLE_BARCODE)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_api_timeout_returns_none(self):
+        """OBF-API-05: OBF API 超时 → 返回 None"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.side_effect = httpx.TimeoutException("timeout")
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode(SAMPLE_BARCODE)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_api_brand_missing_defaults_to_unknown(self):
+        """OBF-API-06: 品牌字段缺失 → 默认为 '未知品牌'"""
+        redis = make_redis_mock()
+        svc = make_obf_service(redis)
+
+        obf_data = {
+            "status": 1,
+            "product": {
+                "code": "1234567890123",
+                "product_name": "Mystery Cream",
+                "brands": "",
+                "categories": "",
+            },
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = obf_data
+
+        with patch("app.services.open_beauty_service.httpx.AsyncClient") as MockClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get.return_value = mock_response
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client_instance
+
+            result = await svc.lookup_barcode("1234567890123")
+
+        assert result is not None
+        assert result["brand"] == "未知品牌"
+        assert result["category"] == "化妆品"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F2 — BrandVerifyService 品牌防伪跳转
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBrandVerifyServiceBrandList:
+    """BRAND-LIST: 品牌列表测试"""
+
+    def test_get_all_brands_returns_all_builtin(self):
+        """BRAND-LIST-01: get_all_brands 返回所有内置品牌"""
+        svc = make_brand_service()
+        brands = svc.get_all_brands()
+        assert len(brands) == len(BUILTIN_BRANDS)
+
+    def test_brand_list_has_required_fields(self):
+        """BRAND-LIST-02: 每个品牌项包含必要字段"""
+        svc = make_brand_service()
+        brands = svc.get_all_brands()
+        required_fields = {"brand_key", "brand_name", "brand_name_en", "verify_type", "description"}
+        for brand in brands:
+            assert required_fields.issubset(brand.keys()), f"品牌 {brand['brand_key']} 缺少必要字段"
+
+
+class TestBrandVerifyServiceLookup:
+    """BRAND-LOOKUP: 品牌查找/匹配测试"""
+
+    def test_lookup_by_chinese_name(self):
+        """BRAND-LOOKUP-01: 通过中文名查找品牌"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("兰蔻")
+        assert info is not None
+        assert info["brand_key"] == "lancome"
+        assert info["brand_name"] == "兰蔻"
+
+    def test_lookup_by_english_name(self):
+        """BRAND-LOOKUP-02: 通过英文名查找品牌"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("Lancôme")
+        assert info is not None
+        assert info["brand_key"] == "lancome"
+
+    def test_lookup_by_brand_key(self):
+        """BRAND-LOOKUP-03: 通过 brand_key 查找品牌"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("loreal")
+        assert info is not None
+        assert info["brand_name"] == "欧莱雅"
+
+    def test_lookup_case_insensitive(self):
+        """BRAND-LOOKUP-04: 查找不区分大小写"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("CHANEL")
+        assert info is not None
+        assert info["brand_key"] == "chanel"
+
+    def test_lookup_with_whitespace_stripped(self):
+        """BRAND-LOOKUP-05: 品牌名前后空格被去除"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("  迪奥  ")
+        assert info is not None
+        assert info["brand_key"] == "dior"
+
+    def test_lookup_unknown_brand_returns_none(self):
+        """BRAND-LOOKUP-06: 未知品牌 → 返回 None"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("不存在的品牌")
+        assert info is None
+
+    def test_lookup_returns_verify_info_fields(self):
+        """BRAND-LOOKUP-07: 返回信息包含验证所需字段"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("SK-II")
+        assert info is not None
+        assert info["verify_type"] == "url"
+        assert info["verify_url"] is not None
+        assert "description" in info
+
+    def test_lookup_miniprogram_type_has_appid(self):
+        """BRAND-LOOKUP-08: miniprogram 类型品牌包含 miniprogram_id"""
+        svc = make_brand_service()
+        info = svc.get_brand_verify_info("欧莱雅")
+        assert info is not None
+        assert info["verify_type"] == "miniprogram"
+        assert info["miniprogram_id"] is not None
+        assert info["miniprogram_path"] is not None
+
+    def test_all_builtin_brands_matchable(self):
+        """BRAND-LOOKUP-09: 所有内置品牌均可通过名称查找"""
+        svc = make_brand_service()
+        for b in BUILTIN_BRANDS:
+            # 中文名查找
+            info = svc.get_brand_verify_info(b["brand_name"])
+            assert info is not None, f"品牌 {b['brand_name']} 无法通过中文名查找"
+            # key 查找
+            info = svc.get_brand_verify_info(b["brand_key"])
+            assert info is not None, f"品牌 {b['brand_key']} 无法通过 key 查找"
+
+
+class TestBrandVerifyServiceCodePattern:
+    """BRAND-CODE: 防伪码格式自动识别测试"""
+
+    def test_match_brand_by_code_no_patterns(self):
+        """BRAND-CODE-01: 所有内置品牌均无 code_pattern → 总是返回 None"""
+        svc = make_brand_service()
+        # 当前内置品牌全部 code_pattern=None，所以匹配任何码都应返回 None
+        result = svc.match_brand_by_code("LOREAL-ABC123-XYZ")
+        assert result is None
+
+    def test_match_brand_by_code_empty_string(self):
+        """BRAND-CODE-02: 空防伪码 → 返回 None"""
+        svc = make_brand_service()
+        result = svc.match_brand_by_code("")
+        assert result is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F3 — BarcodeRequest Schema 校验
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBarcodeRequestValidation:
+    """BARCODE-SCHEMA: 条形码请求格式校验"""
+
+    def test_valid_ean13(self):
+        """BARCODE-SCHEMA-01: EAN-13 合法条形码"""
+        req = BarcodeRequest(barcode="3337875597371")
+        assert req.barcode == "3337875597371"
+
+    def test_valid_ean8(self):
+        """BARCODE-SCHEMA-02: EAN-8 合法条形码"""
+        req = BarcodeRequest(barcode="12345678")
+        assert req.barcode == "12345678"
+
+    def test_valid_upc_a(self):
+        """BARCODE-SCHEMA-03: UPC-A 12 位合法条形码"""
+        req = BarcodeRequest(barcode="012345678901")
+        assert req.barcode == "012345678901"
+
+    def test_valid_14_digits(self):
+        """BARCODE-SCHEMA-04: 14 位条形码（GTIN-14）"""
+        req = BarcodeRequest(barcode="12345678901234")
+        assert req.barcode == "12345678901234"
+
+    def test_strips_whitespace(self):
+        """BARCODE-SCHEMA-05: 前后空格被去除"""
+        req = BarcodeRequest(barcode="  3337875597371  ")
+        assert req.barcode == "3337875597371"
 
     def test_too_short_rejected(self):
-        """AF-I-06: 过短的码被拒绝（< 10字符）"""
-        with pytest.raises(ValueError, match="防伪码格式不正确"):
-            VerifyRequest(code="AB")
-
-    def test_sql_injection_rejected(self):
-        """AF-S-01: SQL 注入字符被拒绝"""
+        """BARCODE-SCHEMA-06: 少于 8 位 → 校验失败"""
         with pytest.raises(ValueError):
-            VerifyRequest(code="'; DROP TABLE anti_fake_codes; --")
+            BarcodeRequest(barcode="1234567")
 
-    def test_xss_injection_rejected(self):
-        """AF-S-02: XSS 注入被拒绝"""
+    def test_too_long_rejected(self):
+        """BARCODE-SCHEMA-07: 超过 14 位 → 校验失败"""
         with pytest.raises(ValueError):
-            VerifyRequest(code="<script>alert(1)</script>")
+            BarcodeRequest(barcode="123456789012345")
 
-    def test_excluded_chars_O_rejected(self):
-        """AF-U-05: 字符集排除 O（易混淆）"""
+    def test_alpha_chars_rejected(self):
+        """BARCODE-SCHEMA-08: 包含字母 → 校验失败"""
         with pytest.raises(ValueError):
-            VerifyRequest(code="OOOOOOOOOOOOO")
+            BarcodeRequest(barcode="33378755ABC")
 
-    def test_excluded_chars_0_rejected(self):
-        """字符集排除 0（数字零）"""
+    def test_empty_string_rejected(self):
+        """BARCODE-SCHEMA-09: 空字符串 → 校验失败"""
         with pytest.raises(ValueError):
-            VerifyRequest(code="000000000000")
+            BarcodeRequest(barcode="")
 
-    def test_excluded_chars_I_rejected(self):
-        """字符集排除 I"""
+    def test_special_chars_rejected(self):
+        """BARCODE-SCHEMA-10: 包含特殊字符 → 校验失败"""
         with pytest.raises(ValueError):
-            VerifyRequest(code="IIIIIIIIIIIII")
-
-    def test_excluded_chars_1_rejected(self):
-        """字符集排除 1"""
-        with pytest.raises(ValueError):
-            VerifyRequest(code="111111111111")
-
-    def test_excluded_chars_L_rejected(self):
-        """字符集排除 L"""
-        with pytest.raises(ValueError):
-            VerifyRequest(code="LLLLLLLLLLLLL")
-
-    def test_valid_no_dash_code(self):
-        """不含连字符的有效码"""
-        req = VerifyRequest(code="ABCDEFGHJK")
-        assert req.code == "ABCDEFGHJK"
+            BarcodeRequest(barcode="3337-875-5973")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F2 — 防伪码查询核心
+# F4 — BrandVerifyRequest Schema 校验
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestVerifyCodeCacheHit:
-    """AF-U-06: 缓存命中场景"""
+class TestBrandVerifyRequestValidation:
+    """BRAND-SCHEMA: 品牌防伪请求格式校验"""
+
+    def test_valid_brand_name_only(self):
+        """BRAND-SCHEMA-01: 仅品牌名"""
+        req = BrandVerifyRequest(brand_name="兰蔻")
+        assert req.brand_name == "兰蔻"
+        assert req.code is None
+
+    def test_valid_brand_name_with_code(self):
+        """BRAND-SCHEMA-02: 品牌名 + 防伪码"""
+        req = BrandVerifyRequest(brand_name="欧莱雅", code="ABC123XYZ")
+        assert req.brand_name == "欧莱雅"
+        assert req.code == "ABC123XYZ"
+
+    def test_empty_brand_name_rejected(self):
+        """BRAND-SCHEMA-03: 空品牌名 → 校验失败"""
+        with pytest.raises(ValueError):
+            BrandVerifyRequest(brand_name="   ")
+
+    def test_brand_name_stripped(self):
+        """BRAND-SCHEMA-04: 品牌名前后空格被去除"""
+        req = BrandVerifyRequest(brand_name="  香奈儿  ")
+        assert req.brand_name == "香奈儿"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F5 — API 端点集成测试（使用 conftest 提供的 client fixture）
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 生成测试用 JWT token
+def _make_auth_header():
+    from app.core.security import create_access_token
+    token = create_access_token({"sub": "1", "openid": "test_openid_001"})
+    return {"Authorization": f"Bearer {token}"}
+
+
+class TestBarcodeEndpoint:
+    """API-BARCODE: POST /api/v1/anti-fake/barcode"""
 
     @pytest.mark.asyncio
-    async def test_cache_hit_returns_without_db(self):
-        """缓存命中直接返回，不查数据库"""
-        cached_data = {
-            "is_authentic": True,
-            "product": {"id": 1001, "name": "花瓣精华水",
-                        "brand": "Petal", "category": "护肤",
-                        "cover_image": None, "batch_no": None,
-                        "production_date": None, "expiry_date": None},
-            "verification": {
-                "first_verified": False,
-                "query_count": 2,
-                "verified_at": "2026-04-01T10:00:00+00:00",
-            },
-        }
+    async def test_barcode_found(self, client, mock_redis):
+        """API-BARCODE-01: 条形码查询成功 → 返回产品信息"""
+        # mock redis cache hit with product data
+        cached_product = json.dumps({
+            "barcode": SAMPLE_BARCODE,
+            "product_name": "CeraVe Moisturizing Cream",
+            "brand": "CeraVe",
+            "category": "Moisturizers",
+            "image_url": None,
+            "ingredients": "Aqua, Glycerin",
+            "labels": None,
+            "quantity": "50ml",
+            "source": "Open Beauty Facts",
+            "source_url": f"https://world.openbeautyfacts.org/product/{SAMPLE_BARCODE}",
+        })
+        mock_redis.get.return_value = cached_product
 
-        redis = AsyncMock()
-        redis.incr.return_value = 1   # rate limit ok
-        redis.exists.return_value = 0  # no empty cache
-        redis.get.return_value = json.dumps(cached_data)
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        # Patch _async_increment_db_count to avoid DB call
-        svc._async_increment_db_count = AsyncMock()
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-
-        assert result["is_authentic"] is True
-        assert result["verification"]["query_count"] == 3  # incremented
-        db.execute.assert_not_called()
-        svc._async_increment_db_count.assert_called_once_with("PET-2B2G4R-A7X9K3M2-Q")
+        resp = await client.post(
+            "/api/v1/anti-fake/barcode",
+            json={"barcode": SAMPLE_BARCODE},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["found"] is True
+        assert body["data"]["product"]["product_name"] == "CeraVe Moisturizing Cream"
 
     @pytest.mark.asyncio
-    async def test_cache_hit_adds_warning_when_threshold_reached(self):
-        """缓存命中且计数达到告警阈值，返回 warning"""
-        cached_data = {
-            "is_authentic": True,
-            "product": None,
-            "verification": {
-                "first_verified": False,
-                "query_count": QUERY_COUNT_WARNING - 1,  # 下一次触发
-                "verified_at": "2026-04-01T10:00:00+00:00",
-            },
-        }
+    async def test_barcode_not_found(self, client, mock_redis):
+        """API-BARCODE-02: 条形码未收录 → code=2001"""
+        mock_redis.get.return_value = '"__MISS__"'
 
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = json.dumps(cached_data)
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc._async_increment_db_count = AsyncMock()
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-        assert "warning" in result["verification"]
-
-
-class TestVerifyCodeDbQuery:
-    """AF-U-01 ~ AF-U-04: 数据库查询场景"""
+        resp = await client.post(
+            "/api/v1/anti-fake/barcode",
+            json={"barcode": SAMPLE_MISSING_BARCODE},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 2001
+        assert body["data"]["found"] is False
 
     @pytest.mark.asyncio
-    async def test_first_verify_returns_first_verified_true(self):
-        """AF-U-01: 首次查询返回 first_verified=True"""
-        af_code = make_af_code(is_verified=False, query_count=0)
-
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None  # 缓存未命中
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = af_code
-        svc.repo.mark_first_verified.return_value = None
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=42)
-
-        assert result["is_authentic"] is True
-        assert result["verification"]["first_verified"] is True
-        assert result["verification"]["query_count"] == 1
-        svc.repo.mark_first_verified.assert_called_once()
+    async def test_barcode_invalid_format(self, client):
+        """API-BARCODE-03: 非法条形码 → 422"""
+        resp = await client.post(
+            "/api/v1/anti-fake/barcode",
+            json={"barcode": "abc"},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_second_verify_returns_query_count(self):
-        """AF-U-02: 非首次查询返回正确 query_count"""
-        af_code = make_af_code(
-            is_verified=True,
-            query_count=2,
-            status=CODE_STATUS_VERIFIED,
-            verified_at=datetime.now(timezone.utc) - timedelta(days=1),
+    async def test_barcode_no_auth(self, client):
+        """API-BARCODE-04: 无 token → 401/403"""
+        resp = await client.post(
+            "/api/v1/anti-fake/barcode",
+            json={"barcode": SAMPLE_BARCODE},
+        )
+        assert resp.status_code in (401, 403)
+
+
+class TestBrandVerifyEndpoint:
+    """API-BRAND: POST /api/v1/anti-fake/brand-verify"""
+
+    @pytest.mark.asyncio
+    async def test_brand_found(self, client, mock_redis):
+        """API-BRAND-01: 已知品牌 → 返回跳转信息"""
+        mock_redis.get.return_value = None
+
+        resp = await client.post(
+            "/api/v1/anti-fake/brand-verify",
+            json={"brand_name": "兰蔻"},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["found"] is True
+        assert body["data"]["brand"]["brand_key"] == "lancome"
+
+    @pytest.mark.asyncio
+    async def test_brand_not_found(self, client, mock_redis):
+        """API-BRAND-02: 未知品牌 → code=2004"""
+        mock_redis.get.return_value = None
+
+        resp = await client.post(
+            "/api/v1/anti-fake/brand-verify",
+            json={"brand_name": "虚构品牌ABC"},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 2004
+        assert body["data"]["found"] is False
+
+    @pytest.mark.asyncio
+    async def test_brand_with_code(self, client, mock_redis):
+        """API-BRAND-03: 品牌名 + 防伪码 → 正常返回"""
+        mock_redis.get.return_value = None
+
+        resp = await client.post(
+            "/api/v1/anti-fake/brand-verify",
+            json={"brand_name": "SK-II", "code": "SKII12345"},
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["found"] is True
+
+    @pytest.mark.asyncio
+    async def test_brand_no_auth(self, client):
+        """API-BRAND-04: 无 token → 401/403"""
+        resp = await client.post(
+            "/api/v1/anti-fake/brand-verify",
+            json={"brand_name": "兰蔻"},
+        )
+        assert resp.status_code in (401, 403)
+
+
+class TestBrandsListEndpoint:
+    """API-BRANDS: GET /api/v1/anti-fake/brands"""
+
+    @pytest.mark.asyncio
+    async def test_list_brands(self, client, mock_redis):
+        """API-BRANDS-01: 获取品牌列表（无需登录）"""
+        mock_redis.get.return_value = None
+
+        resp = await client.get("/api/v1/anti-fake/brands")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["data"]["total"] == len(BUILTIN_BRANDS)
+        assert len(body["data"]["brands"]) == len(BUILTIN_BRANDS)
+
+    @pytest.mark.asyncio
+    async def test_brands_have_required_fields(self, client, mock_redis):
+        """API-BRANDS-02: 品牌列表项包含必要字段"""
+        mock_redis.get.return_value = None
+
+        resp = await client.get("/api/v1/anti-fake/brands")
+        body = resp.json()
+        for brand in body["data"]["brands"]:
+            assert "brand_key" in brand
+            assert "brand_name" in brand
+            assert "brand_name_en" in brand
+            assert "verify_type" in brand
+
+
+class TestHistoryEndpoint:
+    """API-HISTORY: GET /api/v1/anti-fake/history"""
+
+    @pytest.mark.asyncio
+    async def test_history_empty(self, client, mock_redis):
+        """API-HISTORY-01: 无历史记录 → 空列表"""
+        resp = await client.get(
+            "/api/v1/anti-fake/history",
+            headers=_make_auth_header(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["total"] == 0
+        assert body["data"]["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_history_after_barcode_query(self, client, mock_redis):
+        """API-HISTORY-02: 条形码查询后历史中有记录"""
+        # 先做一次条形码查询（会写入历史）
+        mock_redis.get.return_value = '"__MISS__"'
+        await client.post(
+            "/api/v1/anti-fake/barcode",
+            json={"barcode": SAMPLE_BARCODE},
+            headers=_make_auth_header(),
         )
 
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = af_code
-        svc.repo.increment_query_count.return_value = 3
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-
-        assert result["verification"]["first_verified"] is False
-        assert result["verification"]["query_count"] == 3
-        svc.repo.increment_query_count.assert_called_once_with(af_code.id)
-
-    @pytest.mark.asyncio
-    async def test_warning_returned_at_threshold(self):
-        """AF-U-03: query_count >= 3 时返回 warning"""
-        af_code = make_af_code(is_verified=True, query_count=9,
-                               status=CODE_STATUS_WARNING)
-
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = af_code
-        svc.repo.increment_query_count.return_value = 10
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-        assert "warning" in result["verification"]
-        assert "10" in result["verification"]["warning"]
-
-    @pytest.mark.asyncio
-    async def test_not_found_raises_exception(self):
-        """AF-U-04: 防伪码不存在抛出 AntiFakeCodeNotFound"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = None
-
-        with pytest.raises(AntiFakeCodeNotFound):
-            await svc.verify_code("NOT-EXIST-CODE", user_id=1)
-
-    @pytest.mark.asyncio
-    async def test_not_found_writes_empty_cache(self):
-        """AF-U-08: 不存在的码写入空缓存（防穿透）"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = None
-
-        with pytest.raises(AntiFakeCodeNotFound):
-            await svc.verify_code("NOT-EXIST-CODE", user_id=1)
-
-        # 应写入空缓存
-        redis.setex.assert_called_once()
-        call_args = redis.setex.call_args[0]
-        assert "af:empty:" in call_args[0]
-
-    @pytest.mark.asyncio
-    async def test_empty_cache_hit_prevents_db_query(self):
-        """AF-U-08: 命中空缓存不再查 DB"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 1  # 空缓存存在
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-
-        with pytest.raises(AntiFakeCodeNotFound):
-            await svc.verify_code("NOT-EXIST-CODE", user_id=1)
-
-        svc.repo.find_by_code.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_success_writes_to_redis_cache(self):
-        """查询成功后将结果写入 Redis 缓存"""
-        af_code = make_af_code(is_verified=False, query_count=0)
-
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = af_code
-        svc.repo.mark_first_verified.return_value = None
-
-        await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-
-        redis.setex.assert_called_once()
-        cache_key = redis.setex.call_args[0][0]
-        assert "af:code:" in cache_key
-
-    @pytest.mark.asyncio
-    async def test_result_contains_product_info(self):
-        """返回结果包含完整产品信息"""
-        product = make_product(name="花瓣精华水", brand="Petal")
-        af_code = make_af_code(is_verified=False, product=product)
-
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-        redis.exists.return_value = 0
-        redis.get.return_value = None
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.find_by_code.return_value = af_code
-        svc.repo.mark_first_verified.return_value = None
-
-        result = await svc.verify_code("PET-2B2G4R-A7X9K3M2-Q", user_id=1)
-
-        assert result["product"]["name"] == "花瓣精华水"
-        assert result["product"]["brand"] == "Petal"
-        assert result["product"]["batch_no"] == "B20260301"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# F3 — 查询频率限制
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestRateLimit:
-    """AF-U-07 / AF-S-03: 频率限制"""
-
-    @pytest.mark.asyncio
-    async def test_normal_rate_no_exception(self):
-        """正常频率不被限制"""
-        redis = AsyncMock()
-        redis.incr.return_value = 5   # 5次/min，在限制内
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        # 不应抛出异常
-        await svc._check_rate_limit(user_id=1)
-
-    @pytest.mark.asyncio
-    async def test_user_rate_limit_exceeded(self):
-        """AF-U-07: 用户超过 10次/min，抛出 RateLimitExceeded"""
-        redis = AsyncMock()
-        redis.incr.return_value = 11   # 超限
-        redis.ttl.return_value = 45
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        with pytest.raises(RateLimitExceeded) as exc_info:
-            await svc._check_rate_limit(user_id=1)
-        assert "45" in str(exc_info.value)
-        assert exc_info.value.ttl == 45
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_sets_expire_on_first_call(self):
-        """首次 INCR 时设置过期时间"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1  # 首次调用
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        await svc._check_rate_limit(user_id=1)
-
-        redis.expire.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_ip_rate_limit_exceeded(self):
-        """AF-S-03: IP 超过 30次/min，抛出 RateLimitExceeded"""
-        redis = AsyncMock()
-        # 用户维度通过（1次），IP 维度超限（31次）
-        redis.incr.side_effect = [1, 31]
-        redis.ttl.return_value = 30
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        with pytest.raises(RateLimitExceeded):
-            await svc._check_rate_limit(user_id=1, client_ip="192.168.1.1")
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_key_includes_user_id(self):
-        """频率限制 Redis Key 包含 user_id"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        await svc._check_rate_limit(user_id=999)
-
-        # 找到包含 user_id 的 incr 调用
-        incr_keys = [call[0][0] for call in redis.incr.call_args_list]
-        assert any("999" in k for k in incr_keys)
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_key_includes_ip(self):
-        """IP 限制 Redis Key 包含 IP 地址"""
-        redis = AsyncMock()
-        redis.incr.return_value = 1
-
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        await svc._check_rate_limit(user_id=1, client_ip="10.0.0.1")
-
-        incr_keys = [call[0][0] for call in redis.incr.call_args_list]
-        assert any("10.0.0.1" in k for k in incr_keys)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# F4 — 查询历史
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestGetHistory:
-    """AF-I-03 / AF-I-04: 查询历史分页"""
-
-    @pytest.mark.asyncio
-    async def test_get_history_returns_paged_result(self):
-        """get_history 返回分页结构"""
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.get_history.return_value = {
-            "total": 5,
-            "items": [
-                {
-                    "code": "PET-2B2G4R-A7X9K3M2-Q",
-                    "product_name": "花瓣精华水",
-                    "is_authentic": True,
-                    "queried_at": datetime.now(timezone.utc),
-                }
-            ],
-        }
-
-        result = await svc.get_history(user_id=1, page=1, size=20)
-
-        assert result["total"] == 5
-        assert len(result["items"]) == 1
-        svc.repo.get_history.assert_called_once_with(user_id=1, page=1, size=20)
-
-    @pytest.mark.asyncio
-    async def test_get_history_passes_correct_pagination(self):
-        """AF-I-04: 分页参数正确透传给 Repository"""
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.get_history.return_value = {"total": 10, "items": []}
-
-        await svc.get_history(user_id=42, page=3, size=5)
-        svc.repo.get_history.assert_called_once_with(user_id=42, page=3, size=5)
-
-    @pytest.mark.asyncio
-    async def test_history_empty_returns_zero_total(self):
-        """无历史记录时返回 total=0"""
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.get_history.return_value = {"total": 0, "items": []}
-
-        result = await svc.get_history(user_id=99, page=1, size=20)
-        assert result["total"] == 0
-        assert result["items"] == []
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# F5 — 批量导入
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestBatchImport:
-    """AF-U-12 ~ AF-U-14: 批量导入"""
-
-    @pytest.mark.asyncio
-    async def test_batch_import_success(self):
-        """AF-U-12: 正常批量导入返回成功数量"""
-        codes = [
-            {"code": f"PET-202604-A{i:07d}-Q", "product_id": 1, "batch_no": "B001"}
-            for i in range(100)
-        ]
-
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.bulk_create.return_value = 100
-
-        result = await svc.batch_import(codes)
-
-        assert result["imported"] == 100
-        assert result["total"] == 100
-        svc.repo.bulk_create.assert_called_once_with(codes, salt="")
-
-    @pytest.mark.asyncio
-    async def test_batch_import_exceeds_limit_raises(self):
-        """AF-U-14: 超过单次上限 5000 抛出 BatchSizeExceeded"""
-        codes = [
-            {"code": f"PET-202604-X{i:07d}-Z", "product_id": 1}
-            for i in range(6000)
-        ]
-
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.bulk_create.side_effect = BatchSizeExceeded(5000, 6000)
-
-        with pytest.raises(BatchSizeExceeded) as exc_info:
-            await svc.batch_import(codes)
-        assert exc_info.value.limit == 5000
-        assert exc_info.value.actual == 6000
-
-    @pytest.mark.asyncio
-    async def test_batch_import_with_salt(self):
-        """批量导入传递 salt 参数"""
-        codes = [{"code": "PET-2B2G4R-A7X9K3M2-Q", "product_id": 1}]
-
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-        svc.repo = AsyncMock()
-        svc.repo.bulk_create.return_value = 1
-
-        await svc.batch_import(codes, salt="secret-salt")
-        svc.repo.bulk_create.assert_called_once_with(codes, salt="secret-salt")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Repository 层单元测试
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestAntiFakeRepository:
-    """AF-U-09 ~ AF-U-14: Repository 层"""
-
-    @pytest.mark.asyncio
-    async def test_find_by_code_returns_none_when_not_found(self):
-        """AF-U-10: 不存在的防伪码返回 None"""
-        db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        db.execute.return_value = mock_result
-
-        repo = AntiFakeRepository(db)
-        result = await repo.find_by_code("NOT-EXIST")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_find_by_code_returns_object_when_found(self):
-        """AF-U-09: 存在的防伪码返回 AntiFakeCode 对象"""
-        af_code = make_af_code()
-
-        db = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = af_code
-        db.execute.return_value = mock_result
-
-        repo = AntiFakeRepository(db)
-        result = await repo.find_by_code("PET-2B2G4R-A7X9K3M2-Q")
-        assert result is not None
-        assert result.code == "PET-2B2G4R-A7X9K3M2-Q"
-
-    @pytest.mark.asyncio
-    async def test_increment_query_count_transitions_to_warning(self):
-        """query_count 达到 WARNING 阈值时状态变为 warning"""
-        db = AsyncMock()
-
-        # 第一次 execute：读当前 query_count = QUERY_COUNT_WARNING - 1
-        count_result = MagicMock()
-        count_result.scalar_one_or_none.return_value = QUERY_COUNT_WARNING - 1
-        # 第二次 execute：update
-        update_result = MagicMock()
-        db.execute.side_effect = [count_result, update_result]
-
-        repo = AntiFakeRepository(db)
-        new_count = await repo.increment_query_count(code_id=1)
-
-        assert new_count == QUERY_COUNT_WARNING
-        # 验证 update 调用（第2次 execute）
-        assert db.execute.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_increment_query_count_transitions_to_suspicious(self):
-        """query_count 达到 SUSPICIOUS 阈值时状态变为 suspicious"""
-        db = AsyncMock()
-        count_result = MagicMock()
-        count_result.scalar_one_or_none.return_value = QUERY_COUNT_SUSPICIOUS - 1
-        update_result = MagicMock()
-        db.execute.side_effect = [count_result, update_result]
-
-        repo = AntiFakeRepository(db)
-        new_count = await repo.increment_query_count(code_id=2)
-
-        assert new_count == QUERY_COUNT_SUSPICIOUS
-
-    @pytest.mark.asyncio
-    async def test_bulk_create_exceeds_limit_raises(self):
-        """AF-U-14: bulk_create 超过 5000 条抛出 BatchSizeExceeded"""
-        db = AsyncMock()
-        repo = AntiFakeRepository(db)
-
-        codes = [{"code": f"CODE{i:010d}", "product_id": 1} for i in range(5001)]
-        with pytest.raises(BatchSizeExceeded):
-            await repo.bulk_create(codes)
-
-    @pytest.mark.asyncio
-    async def test_bulk_create_stores_correct_count(self):
-        """AF-U-12: 正常批量导入，add 调用次数 == 数据量"""
-        db = AsyncMock()
-        repo = AntiFakeRepository(db)
-
-        codes = [
-            {"code": f"PET-202604-A{i:07d}-Q", "product_id": 1, "batch_no": "B001"}
-            for i in range(10)
-        ]
-        result = await repo.bulk_create(codes, salt="test-salt")
-
-        assert result == 10
-        assert db.add.call_count == 10
-        db.flush.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_bulk_create_hashes_code_with_salt(self):
-        """批量导入时 code_hash 使用 SHA-256(code+salt)"""
-        import hashlib
-
-        db = AsyncMock()
-        repo = AntiFakeRepository(db)
-
-        codes = [{"code": "PET-2B2G4R-A7X9K3M2-Q", "product_id": 1}]
-        await repo.bulk_create(codes, salt="my-salt")
-
-        # 获取 add 调用的第一个参数
-        af_record = db.add.call_args[0][0]
-        expected_hash = hashlib.sha256(
-            ("PET-2B2G4R-A7X9K3M2-Q" + "my-salt").encode()
-        ).hexdigest()
-        assert af_record.code_hash == expected_hash
-
-    @pytest.mark.asyncio
-    async def test_bulk_create_auto_uppercases_code(self):
-        """批量导入时防伪码自动转大写"""
-        db = AsyncMock()
-        repo = AntiFakeRepository(db)
-
-        codes = [{"code": "pet-2b2g4r-a7x9k3m2-q", "product_id": 1}]
-        await repo.bulk_create(codes)
-
-        af_record = db.add.call_args[0][0]
-        assert af_record.code == "PET-2B2G4R-A7X9K3M2-Q"
-
-    @pytest.mark.asyncio
-    async def test_mark_first_verified_sets_fields(self):
-        """mark_first_verified 调用 update，设置 is_verified=True"""
-        db = AsyncMock()
-        mock_result = MagicMock()
-        db.execute.return_value = mock_result
-
-        repo = AntiFakeRepository(db)
-        now = datetime.now(timezone.utc)
-        await repo.mark_first_verified(code_id=1, user_id=42, verified_at=now)
-
-        db.execute.assert_called_once()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Service 缓存辅助方法测试
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestServiceCacheHelpers:
-    """缓存辅助函数"""
-
-    @pytest.mark.asyncio
-    async def test_get_cached_result_returns_none_on_miss(self):
-        """AF-U-06: 缓存未命中返回 None"""
-        redis = AsyncMock()
-        redis.get.return_value = None
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        result = await svc._get_cached_result("SOME-CODE")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_get_cached_result_returns_parsed_json(self):
-        """缓存命中返回解析后的字典"""
-        data = {"is_authentic": True, "product": {"name": "Test"}}
-        redis = AsyncMock()
-        redis.get.return_value = json.dumps(data)
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        result = await svc._get_cached_result("SOME-CODE")
-        assert result["is_authentic"] is True
-        assert result["product"]["name"] == "Test"
-
-    @pytest.mark.asyncio
-    async def test_invalidate_cache_deletes_both_keys(self):
-        """invalidate_cache 删除查询缓存和空缓存"""
-        redis = AsyncMock()
-        db = AsyncMock()
-        svc = AntiFakeService(db=db, redis=redis)
-
-        await svc.invalidate_cache("SOME-CODE")
-        assert redis.delete.call_count == 2
-        deleted_keys = [c[0][0] for c in redis.delete.call_args_list]
-        assert any("af:code:" in k for k in deleted_keys)
-        assert any("af:empty:" in k for k in deleted_keys)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# _build_result 静态方法测试
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestBuildResult:
-    """AntiFakeService._build_result 静态方法"""
-
-    def test_first_verify_result_structure(self):
-        """首次查询结果结构正确"""
-        af_code = make_af_code(is_verified=False)
-        product = make_product()
-        now = datetime.now(timezone.utc)
-
-        result = AntiFakeService._build_result(
-            af_code, product, query_count=1, is_first=True, verified_at=now
+        # 查历史
+        resp = await client.get(
+            "/api/v1/anti-fake/history",
+            headers=_make_auth_header(),
         )
-        assert result["is_authentic"] is True
-        assert result["verification"]["first_verified"] is True
-        assert result["verification"]["query_count"] == 1
-        assert "warning" not in result["verification"]
-        assert result["product"]["name"] == "花瓣精华水"
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["total"] >= 1
+        item = body["data"]["items"][0]
+        assert item["query_type"] == "barcode"
+        assert item["query_value"] == SAMPLE_BARCODE
 
-    def test_non_first_verify_has_first_verified_at(self):
-        """非首次查询包含 first_verified_at 字段"""
-        past = datetime.now(timezone.utc) - timedelta(days=10)
-        af_code = make_af_code(is_verified=True, verified_at=past)
-        product = make_product()
-        now = datetime.now(timezone.utc)
-
-        result = AntiFakeService._build_result(
-            af_code, product, query_count=3, is_first=False, verified_at=now
+    @pytest.mark.asyncio
+    async def test_history_after_brand_query(self, client, mock_redis):
+        """API-HISTORY-03: 品牌查询后历史中有记录"""
+        mock_redis.get.return_value = None
+        await client.post(
+            "/api/v1/anti-fake/brand-verify",
+            json={"brand_name": "迪奥"},
+            headers=_make_auth_header(),
         )
-        assert result["verification"]["first_verified"] is False
-        assert "first_verified_at" in result["verification"]
 
-    def test_warning_added_when_query_count_gte_threshold(self):
-        """query_count >= QUERY_COUNT_WARNING 时包含 warning"""
-        af_code = make_af_code()
-        product = make_product()
-        now = datetime.now(timezone.utc)
-
-        result = AntiFakeService._build_result(
-            af_code, product,
-            query_count=QUERY_COUNT_WARNING,
-            is_first=False,
-            verified_at=now,
+        resp = await client.get(
+            "/api/v1/anti-fake/history",
+            headers=_make_auth_header(),
         )
-        assert "warning" in result["verification"]
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["total"] >= 1
+        item = body["data"]["items"][0]
+        assert item["query_type"] == "brand_redirect"
+        assert "迪奥" in item["query_value"]
 
-    def test_no_warning_below_threshold(self):
-        """query_count < QUERY_COUNT_WARNING 时无 warning"""
-        af_code = make_af_code()
-        product = make_product()
-        now = datetime.now(timezone.utc)
-
-        result = AntiFakeService._build_result(
-            af_code, product,
-            query_count=QUERY_COUNT_WARNING - 1,
-            is_first=True,
-            verified_at=now,
+    @pytest.mark.asyncio
+    async def test_history_pagination(self, client, mock_redis):
+        """API-HISTORY-04: 分页参数生效"""
+        resp = await client.get(
+            "/api/v1/anti-fake/history?page=1&size=5",
+            headers=_make_auth_header(),
         )
-        assert "warning" not in result["verification"]
+        assert resp.status_code == 200
 
-    def test_no_product_info_when_product_none(self):
-        """无关联产品时 product 字段为 None"""
-        af_code = make_af_code(product=None)
-        af_code.product = None
-        now = datetime.now(timezone.utc)
-
-        result = AntiFakeService._build_result(
-            af_code, None, query_count=1, is_first=True, verified_at=now
-        )
-        assert result["product"] is None
-
+    @pytest.mark.asyncio
+    async def test_history_no_auth(self, client):
+        """API-HISTORY-05: 无 token → 401/403"""
+        resp = await client.get("/api/v1/anti-fake/history")
+        assert resp.status_code in (401, 403)

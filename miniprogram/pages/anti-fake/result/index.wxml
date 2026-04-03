@@ -1,52 +1,99 @@
 <!-- pages/anti-fake/result/index.wxml -->
+<!-- v2: 条形码查询结果 + 品牌跳转结果 -->
 <view class="container">
-  <view wx:if="{{loading}}" class="loading-wrap">
-    <view class="loading-spinner" />
-    <text class="loading-text">加载中...</text>
-  </view>
 
-  <block wx:elif="{{result}}">
-    <!-- 结果状态卡片 -->
-    <view class="status-card {{result.is_authentic ? 'authentic' : 'fake'}}">
-      <text class="status-icon">{{result.is_authentic ? '✅' : '❌'}}</text>
-      <text class="status-text">{{result.is_authentic ? '正品验证通过' : '疑似假冒产品'}}</text>
-      <text class="confidence">可信度 {{result.confidence_score}}%</text>
+  <!-- ====== 条形码查询结果 ====== -->
+  <block wx:if="{{type === 'barcode' && product}}">
+    <view class="status-card authentic">
+      <text class="status-icon">✅</text>
+      <text class="status-text">已查到产品备案信息</text>
+      <text class="source-tag">数据来源: {{product.source}}</text>
     </view>
 
     <!-- 产品信息 -->
-    <view class="info-card" wx:if="{{result.product_info}}">
+    <view class="info-card">
       <text class="card-title">产品信息</text>
+      <image wx:if="{{product.image_url}}" src="{{product.image_url}}" mode="aspectFit" class="product-img" />
       <view class="info-row">
-        <text class="info-label">品牌</text>
-        <text class="info-value">{{result.product_info.brand || '—'}}</text>
+        <text class="info-label">条形码</text>
+        <text class="info-value">{{product.barcode}}</text>
       </view>
       <view class="info-row">
         <text class="info-label">产品名称</text>
-        <text class="info-value">{{result.product_info.name || '—'}}</text>
+        <text class="info-value">{{product.product_name}}</text>
       </view>
       <view class="info-row">
-        <text class="info-label">序列号</text>
-        <text class="info-value">{{result.serial_number || '—'}}</text>
+        <text class="info-label">品牌</text>
+        <text class="info-value">{{product.brand}}</text>
       </view>
-      <view class="info-row">
-        <text class="info-label">查询次数</text>
-        <text class="info-value">{{result.query_count}} 次</text>
+      <view class="info-row" wx:if="{{product.category}}">
+        <text class="info-label">类别</text>
+        <text class="info-value">{{product.category}}</text>
+      </view>
+      <view class="info-row" wx:if="{{product.quantity}}">
+        <text class="info-label">规格</text>
+        <text class="info-value">{{product.quantity}}</text>
+      </view>
+      <view class="info-row" wx:if="{{product.labels}}">
+        <text class="info-label">标签</text>
+        <text class="info-value">{{product.labels}}</text>
       </view>
     </view>
 
-    <!-- 检测详情 -->
-    <view class="info-card" wx:if="{{result.details}}">
-      <text class="card-title">检测详情</text>
-      <text class="detail-text">{{result.details}}</text>
+    <!-- 成分信息 -->
+    <view class="info-card" wx:if="{{product.ingredients}}">
+      <text class="card-title">成分表</text>
+      <text class="ingredients-text">{{product.ingredients}}</text>
     </view>
 
-    <!-- 操作按钮 -->
+    <view class="notice-card">
+      <text class="notice-text">⚠️ 以上信息来自开源数据库 Open Beauty Facts，仅供参考。如需验证防伪码真伪，请使用品牌官方渠道。</text>
+    </view>
+
     <view class="actions">
-      <button class="btn-primary" bindtap="scanAgain">再次扫码</button>
+      <button class="btn-link" bindtap="openSourceUrl">🔗 查看原始数据页面</button>
+      <button class="btn-primary" bindtap="scanAgain">继续扫码</button>
       <button class="btn-secondary" bindtap="goToHistory">查看历史</button>
     </view>
   </block>
 
+  <!-- ====== 品牌跳转结果 ====== -->
+  <block wx:elif="{{type === 'brand' && brand}}">
+    <view class="status-card brand-redirect">
+      <text class="status-icon">🏷️</text>
+      <text class="status-text">{{brand.brand_name}} 官方验证</text>
+      <text class="brand-en">{{brand.brand_name_en}}</text>
+    </view>
+
+    <view class="info-card">
+      <text class="card-title">验证方式</text>
+      <view class="info-row">
+        <text class="info-label">品牌</text>
+        <text class="info-value">{{brand.brand_name}} ({{brand.brand_name_en}})</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">验证渠道</text>
+        <text class="info-value">{{brand.verify_type === 'miniprogram' ? '微信小程序' : '官方网站'}}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">操作说明</text>
+        <text class="info-value">{{brand.description}}</text>
+      </view>
+    </view>
+
+    <view class="notice-card">
+      <text class="notice-text">💡 防伪码验证结果来自品牌官方系统，数据真实可靠。我们不存储您的防伪码，仅帮您跳转至官方渠道。</text>
+    </view>
+
+    <view class="actions">
+      <button class="btn-primary" bindtap="openVerifyUrl">
+        <text>{{brand.verify_type === 'miniprogram' ? '🚀 打开品牌小程序验证' : '🔗 复制官方验证链接'}}</text>
+      </button>
+      <button class="btn-secondary" bindtap="scanAgain">返回扫码</button>
+    </view>
+  </block>
+
+  <!-- ====== 错误 ====== -->
   <view wx:elif="{{error}}" class="error-wrap">
     <text class="error-icon">⚠️</text>
     <text class="error-text">{{error}}</text>

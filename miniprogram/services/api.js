@@ -17,16 +17,21 @@ const authApi = {
   },
 };
 
-// ========== 防伪查询模块 ==========
+// ========== 防伪查询模块（v2：条形码查询 + 品牌跳转）==========
 const antiFakeApi = {
-  /** 查询防伪码 */
-  verify(code) {
-    return post('/anti-fake/verify', { code });
+  /** 条形码查询（Open Beauty Facts） */
+  lookupBarcode(barcode) {
+    return post('/anti-fake/barcode', { barcode });
   },
 
-  /** 获取单条查询结果 */
-  getResult(analysisId) {
-    return get(`/anti-fake/results/${analysisId}`);
+  /** 品牌防伪跳转 */
+  brandVerify(brandName, code = '') {
+    return post('/anti-fake/brand-verify', { brand_name: brandName, code });
+  },
+
+  /** 获取支持的品牌列表（无需登录） */
+  getBrands() {
+    return get('/anti-fake/brands');
   },
 
   /** 获取查询历史 */

@@ -3,7 +3,7 @@ Petal Backend — SQLAlchemy ORM Models
 """
 from datetime import datetime
 from sqlalchemy import (
-    Column, BigInteger, String, Text, Boolean, Integer, SmallInteger,
+    Column, BigInteger, String, Text, Integer, SmallInteger,
     Numeric, DateTime, ForeignKey, Index,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -43,25 +43,6 @@ class Product(Base):
     status = Column(SmallInteger, default=1)  # 1:上架 0:下架
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class AntiFakeCode(Base):
-    __tablename__ = "anti_fake_codes"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    code = Column(String(64), unique=True, nullable=False, index=True)
-    code_hash = Column(String(128), index=True)
-    product_id = Column(BigInteger, ForeignKey("products.id"))
-    batch_no = Column(String(64))
-    is_verified = Column(Boolean, default=False)
-    verified_at = Column(DateTime)
-    verified_by = Column(BigInteger, ForeignKey("users.id"))
-    query_count = Column(Integer, default=0)
-    status = Column(String(16), default="unused")  # unused/verified/warning/suspicious
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Relationships
-    product = relationship("Product")
 
 
 class SkinAnalysis(Base):
@@ -142,4 +123,22 @@ class PromoClick(Base):
 
     __table_args__ = (
         Index("ix_promo_clicks_promo_action", "promotion_id", "action"),
+    )
+
+
+class VerifyHistory(Base):
+    """用户防伪查询历史（条形码查询 + 品牌跳转）"""
+    __tablename__ = "verify_history"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False, index=True)
+    query_type = Column(String(32), nullable=False)       # "barcode" / "brand_redirect"
+    query_value = Column(String(128), nullable=False)     # 条形码 or 品牌名
+    product_name = Column(String(256))                     # 查到的产品名（条形码查询时）
+    brand_name = Column(String(128))                       # 品牌名
+    result_summary = Column(String(256))                   # 结果摘要
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_verify_history_user_created", "user_id", "created_at"),
     )

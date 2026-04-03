@@ -1,90 +1,175 @@
 """
-Anti-Fake Verification API Endpoints
-功能点:
-  F1 - 防伪码格式校验（Pydantic VerifyRequest）
-  F2 - 防伪码查询（POST /verify）
-  F3 - 频率限制（RateLimitExceeded → 429）
-  F4 - 查询历史（GET /history）
-  F5 - 批量导入管理端（POST /admin/anti-fake/import）
+Anti-Fake Verification API Endpoints (v2)
+──────────────────────────────────────────
+重构：去掉自有平台码，改为两种真实查验功能：
+
+  F1 - 条形码查询（POST /barcode）  → Open Beauty Facts 产品备案信息
+  F2 - 品牌防伪跳转（POST /brand-verify） → 返回品牌官方验证 URL / 小程序
+  F3 - 支持品牌列表（GET /brands）   → 前端展示所有支持跳转的品牌
+  F4 - 查询历史（GET /history）      → 用户最近的查询记录
 """
-from fastapi import APIRouter, Depends, Query, Request, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, Query, Request
 from typing import Optional
-import csv
-import io
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 
 from app.core.security import get_current_user_id
 from app.core.dependencies import get_db, get_redis
-from app.schemas.anti_fake import VerifyRequest, VerifyResponse, HistoryResponse
-from app.schemas.common import ApiResponse
-from app.services.anti_fake_service import (
-    AntiFakeService,
-    AntiFakeCodeNotFound,
-    RateLimitExceeded,
-    AntiFakeCodeSuspicious,
+from app.schemas.anti_fake import (
+    BarcodeRequest,
+    BarcodeResponse,
+    BrandVerifyRequest,
+    BrandVerifyResponse,
+    BrandListResponse,
+    HistoryResponse,
 )
+from app.schemas.common import ApiResponse
+from app.services.open_beauty_service import OpenBeautyService
+from app.services.brand_verify_service import BrandVerifyService
 
 # 错误码常量
-ERR_CODE_NOT_FOUND = 2001
-ERR_CODE_FORMAT = 2002
+ERR_BARCODE_NOT_FOUND = 2001
+ERR_BARCODE_FORMAT = 2002
 ERR_RATE_LIMIT = 2003
-ERR_CODE_SUSPICIOUS = 2004
-ERR_IMPORT_FORMAT = 2005
+ERR_BRAND_NOT_FOUND = 2004
 
 router = APIRouter()
 
 
-def get_anti_fake_service(
-    db: AsyncSession = Depends(get_db),
-    redis: Redis = Depends(get_redis),
-) -> AntiFakeService:
-    return AntiFakeService(db=db, redis=redis)
+# ── 依赖注入 ──────────────────────────────────────────────────────────────────
+
+def get_open_beauty_service(redis: Redis = Depends(get_redis)) -> OpenBeautyService:
+    return OpenBeautyService(redis=redis)
 
 
-# ── F1 + F2 + F3: 防伪码查询 ──────────────────────────────────────────────────
+def get_brand_verify_service(redis: Redis = Depends(get_redis)) -> BrandVerifyService:
+    return BrandVerifyService(redis=redis)
 
-@router.post("/verify", response_model=ApiResponse[VerifyResponse])
-async def verify_code(
-    request: Request,
-    body: VerifyRequest,
+
+# ── F1: 条形码查询 ────────────────────────────────────────────────────────────
+
+@router.post("/barcode", response_model=ApiResponse[BarcodeResponse])
+async def lookup_barcode(
+    body: BarcodeRequest,
     user_id: int = Depends(get_current_user_id),
-    svc: AntiFakeService = Depends(get_anti_fake_service),
+    svc: OpenBeautyService = Depends(get_open_beauty_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    查询美妆产品防伪码。
-    - 格式校验由 VerifyRequest 完成（F1）
-    - Redis 缓存 → DB 查询，缓存穿透防护（F2）
-    - 用户/IP 双维度频率限制（F3）
-    - 首次查询标记；多次查询给出风险提示
+    通过条形码查询化妆品产品信息。
+
+    数据源：Open Beauty Facts（开源化妆品数据库，57000+ 产品）
+    流程：Redis 缓存 → OBF API → 缓存回写
     """
-    client_ip = request.client.host if request.client else "0.0.0.0"
-    try:
-        data = await svc.verify_code(
-            code=body.code,
-            user_id=user_id,
-            client_ip=client_ip,
-        )
-    except RateLimitExceeded as e:
+    product = await svc.lookup_barcode(body.barcode)
+
+    # 记录查询历史
+    await _save_history(
+        db,
+        user_id=user_id,
+        query_type="barcode",
+        query_value=body.barcode,
+        product_name=product["product_name"] if product else None,
+        brand_name=product["brand"] if product else None,
+        result_summary="已查到产品信息" if product else "未收录该条形码",
+    )
+
+    if product is None:
         return ApiResponse(
-            code=ERR_RATE_LIMIT,
-            message=str(e),
-            data={"retry_after": e.ttl},
+            code=ERR_BARCODE_NOT_FOUND,
+            message="该条形码暂未被 Open Beauty Facts 收录，请检查条码是否正确",
+            data=BarcodeResponse(
+                found=False,
+                message="暂未收录该条形码，建议在产品包装上查看品牌名并使用品牌官方验证",
+            ),
         )
-    except AntiFakeCodeNotFound:
+
+    return ApiResponse(
+        data=BarcodeResponse(
+            found=True,
+            product=product,
+            message="已查到产品备案信息（数据来源: Open Beauty Facts）",
+        ),
+    )
+
+
+# ── F2: 品牌防伪跳转 ──────────────────────────────────────────────────────────
+
+@router.post("/brand-verify", response_model=ApiResponse[BrandVerifyResponse])
+async def brand_verify(
+    body: BrandVerifyRequest,
+    user_id: int = Depends(get_current_user_id),
+    svc: BrandVerifyService = Depends(get_brand_verify_service),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    根据品牌名返回官方防伪验证跳转信息。
+
+    返回品牌官方验证 URL 或小程序路径，前端负责跳转。
+    如果传入了 code，会尝试自动识别品牌。
+    """
+    brand_info = None
+
+    # 先尝试通过防伪码格式自动识别品牌
+    if body.code:
+        brand_info = svc.match_brand_by_code(body.code)
+
+    # 如果自动识别失败，按品牌名查找
+    if brand_info is None:
+        brand_info = svc.get_brand_verify_info(body.brand_name)
+
+    # 记录查询历史
+    await _save_history(
+        db,
+        user_id=user_id,
+        query_type="brand_redirect",
+        query_value=body.brand_name,
+        product_name=None,
+        brand_name=brand_info["brand_name"] if brand_info else body.brand_name,
+        result_summary=(
+            f"已跳转{brand_info['brand_name']}官方验证" if brand_info
+            else f"暂不支持{body.brand_name}的官方跳转"
+        ),
+    )
+
+    if brand_info is None:
         return ApiResponse(
-            code=ERR_CODE_NOT_FOUND,
-            message="防伪码不存在，请确认输入是否正确",
-            data=None,
+            code=ERR_BRAND_NOT_FOUND,
+            message=f"暂不支持「{body.brand_name}」的官方防伪跳转",
+            data=BrandVerifyResponse(
+                found=False,
+                message=(
+                    f"暂不支持「{body.brand_name}」的官方跳转，"
+                    "建议直接前往该品牌官方网站或微信公众号查询防伪码"
+                ),
+            ),
         )
-    except AntiFakeCodeSuspicious:
-        return ApiResponse(
-            code=ERR_CODE_SUSPICIOUS,
-            message="该防伪码已被标记为可疑，建议联系客服核实",
-            data=None,
-        )
-    return ApiResponse(data=data)
+
+    return ApiResponse(
+        data=BrandVerifyResponse(
+            found=True,
+            brand=brand_info,
+            message=brand_info["description"],
+        ),
+    )
+
+
+# ── F3: 支持的品牌列表 ────────────────────────────────────────────────────────
+
+@router.get("/brands", response_model=ApiResponse[BrandListResponse])
+async def list_brands(
+    svc: BrandVerifyService = Depends(get_brand_verify_service),
+):
+    """
+    获取所有支持官方防伪跳转的品牌列表（无需登录）。
+    前端用于品牌选择页面展示。
+    """
+    brands = svc.get_all_brands()
+    return ApiResponse(
+        data=BrandListResponse(total=len(brands), brands=brands),
+    )
 
 
 # ── F4: 查询历史 ───────────────────────────────────────────────────────────────
@@ -94,59 +179,65 @@ async def get_history(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     user_id: int = Depends(get_current_user_id),
-    svc: AntiFakeService = Depends(get_anti_fake_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """获取用户防伪查询历史记录（分页）。"""
-    data = await svc.get_history(user_id=user_id, page=page, size=size)
-    return ApiResponse(data=data)
+    from sqlalchemy import select, func
+    from app.models.models import VerifyHistory
+
+    offset = (page - 1) * size
+
+    count_stmt = (
+        select(func.count(VerifyHistory.id))
+        .where(VerifyHistory.user_id == user_id)
+    )
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    data_stmt = (
+        select(VerifyHistory)
+        .where(VerifyHistory.user_id == user_id)
+        .order_by(VerifyHistory.created_at.desc())
+        .offset(offset)
+        .limit(size)
+    )
+    rows = (await db.execute(data_stmt)).scalars().all()
+
+    items = [
+        {
+            "query_type": r.query_type,
+            "query_value": r.query_value,
+            "product_name": r.product_name,
+            "brand_name": r.brand_name,
+            "result_summary": r.result_summary,
+            "queried_at": r.created_at,
+        }
+        for r in rows
+    ]
+    return ApiResponse(data={"total": total, "items": items})
 
 
-# ── F5: 批量导入管理端 ──────────────────────────────────────────────────────────
+# ── 内部工具 ──────────────────────────────────────────────────────────────────
 
-@router.post("/admin/import", response_model=ApiResponse)
-async def batch_import(
-    file: UploadFile = File(..., description="CSV 文件，列：code,product_id,batch_no"),
-    user_id: int = Depends(get_current_user_id),
-    svc: AntiFakeService = Depends(get_anti_fake_service),
-):
-    """
-    管理端批量导入防伪码（CSV 格式）。
-    CSV 列: code, product_id, batch_no（可选）
-    单次上限 5000 条。
-    """
-    content = await file.read()
-    try:
-        text = content.decode("utf-8-sig")  # 兼容 BOM
-        reader = csv.DictReader(io.StringIO(text))
-        codes = []
-        for i, row in enumerate(reader, start=2):  # 行号从第2行（跳过header）
-            code = row.get("code", "").strip()
-            product_id = row.get("product_id", "").strip()
-            batch_no = row.get("batch_no", "").strip()
-            if not code:
-                return ApiResponse(
-                    code=ERR_IMPORT_FORMAT,
-                    message=f"第 {i} 行 code 字段为空",
-                )
-            try:
-                product_id_int = int(product_id) if product_id else None
-            except ValueError:
-                return ApiResponse(
-                    code=ERR_IMPORT_FORMAT,
-                    message=f"第 {i} 行 product_id 格式错误",
-                )
-            codes.append({
-                "code": code,
-                "product_id": product_id_int,
-                "batch_no": batch_no or None,
-            })
-    except Exception as e:
-        return ApiResponse(code=ERR_IMPORT_FORMAT, message=f"CSV 解析失败: {e}")
+async def _save_history(
+    db: AsyncSession,
+    user_id: int,
+    query_type: str,
+    query_value: str,
+    product_name: Optional[str],
+    brand_name: Optional[str],
+    result_summary: str,
+) -> None:
+    """保存查询历史到数据库。"""
+    from app.models.models import VerifyHistory
 
-    try:
-        result = await svc.batch_import(codes)
-    except Exception as e:
-        return ApiResponse(code=ERR_IMPORT_FORMAT, message=str(e))
-
-    return ApiResponse(data=result, message=f"成功导入 {result['imported']} 条防伪码")
+    record = VerifyHistory(
+        user_id=user_id,
+        query_type=query_type,
+        query_value=query_value,
+        product_name=product_name,
+        brand_name=brand_name,
+        result_summary=result_summary,
+    )
+    db.add(record)
+    await db.flush()
 

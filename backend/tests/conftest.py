@@ -5,6 +5,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy import JSON, event
 from unittest.mock import AsyncMock
 
 from app.main import create_app
@@ -16,6 +17,23 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
 engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 TestSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+# ── SQLite 兼容性：JSONB → JSON, BigInteger PK → Integer ─────────────────────
+# PostgreSQL 的 JSONB 类型在 SQLite 下不存在；BigInteger 的 autoincrement
+# 在 SQLite 下需要用 Integer 才能正确自增
+def _patch_types_for_sqlite():
+    """Patch JSONB → JSON and BigInteger primary-key → Integer for SQLite."""
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import BigInteger, Integer as SA_Integer
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, JSONB):
+                column.type = JSON()
+            elif isinstance(column.type, BigInteger) and column.primary_key:
+                column.type = SA_Integer()
+
+_patch_types_for_sqlite()
 
 
 @pytest_asyncio.fixture

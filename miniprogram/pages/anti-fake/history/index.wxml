@@ -1,4 +1,5 @@
 <!-- pages/anti-fake/history/index.wxml -->
+<!-- v2: 条形码查询 + 品牌跳转历史 -->
 <view class="container">
   <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <view class="loading-spinner" />
@@ -7,16 +8,17 @@
 
   <block wx:elif="{{list.length > 0}}">
     <view class="list">
-      <view class="history-item" wx:for="{{list}}" wx:key="id"
-            bindtap="goToResult" data-id="{{item.id}}">
+      <view class="history-item" wx:for="{{list}}" wx:key="index">
         <view class="item-left">
-          <text class="item-status {{item.is_authentic ? 'authentic' : 'fake'}}">
-            {{item.is_authentic ? '✅ 正品' : '❌ 假冒'}}
+          <text class="item-type {{item.query_type === 'barcode' ? 'type-barcode' : 'type-brand'}}">
+            {{item.query_type === 'barcode' ? '📷 条形码' : '🏷️ 品牌验证'}}
           </text>
-          <text class="item-code">{{item.serial_number || item.code}}</text>
-          <text class="item-time">{{item.created_at}}</text>
+          <text class="item-value">{{item.query_value}}</text>
+          <text class="item-product" wx:if="{{item.product_name}}">{{item.product_name}}</text>
+          <text class="item-brand" wx:if="{{item.brand_name}}">{{item.brand_name}}</text>
+          <text class="item-summary">{{item.result_summary}}</text>
+          <text class="item-time">{{item.queried_at}}</text>
         </view>
-        <text class="arrow">›</text>
       </view>
     </view>
 
@@ -31,6 +33,6 @@
   <view wx:elif="{{!loading}}" class="empty-wrap">
     <text class="empty-icon">🔍</text>
     <text class="empty-text">暂无查询记录</text>
-    <button class="btn-primary" bindtap="goToScan">去扫码查询</button>
+    <button class="btn-primary" bindtap="goToScan">去查询</button>
   </view>
 </view>

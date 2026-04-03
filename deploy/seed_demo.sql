@@ -6,7 +6,7 @@
 
 -- 清空旧数据（开发环境）
 TRUNCATE TABLE promo_clicks, coupons, promotions, skin_analyses,
-               anti_fake_codes, products, users
+               verify_history, products, users
                RESTART IDENTITY CASCADE;
 
 -- ──────────────────────────────────────────────────────────────
@@ -41,38 +41,26 @@ INSERT INTO products (name, brand, category, description, price, tags, status, c
    589.00, '["抗皱","紧致","胶原蛋白","视黄醇"]', 1, NOW(), NOW());
 
 -- ──────────────────────────────────────────────────────────────
--- 3. 防伪码数据（功能一：防伪查询）
---    状态: unused(未查询) / verified(已查询) / warning(多次查询)
+-- 3. 防伪查询历史示例数据（功能一：条形码查询 + 品牌跳转）
 -- ──────────────────────────────────────────────────────────────
-INSERT INTO anti_fake_codes
-  (code, code_hash, product_id, batch_no, is_verified, query_count, status, created_at) VALUES
+INSERT INTO verify_history
+  (user_id, query_type, query_value, product_name, brand_name, result_summary, created_at) VALUES
 
-  -- ✅ 正品码，从未被查询（字符集: A-H(无I), J-K(无L), M-N(无O), P-Z, 2-9, 连字符）
-  ('PET-2B2G4R-A7X9K3M2-Q',
-   md5('PET-2B2G4R-A7X9K3M2-Q'),
-   1, 'B20260301', FALSE, 0, 'unused', NOW()),
+  -- 条形码查询（找到产品）
+  (1, 'barcode', '3600523541875', 'Lancôme Rénergie Multi-Lift', '兰蔻',
+   '已找到产品信息', NOW() - INTERVAL '2 days'),
 
-  -- ✅ 正品码，已被查询1次（首次验证）
-  ('PET-3C5H7T-B8Y2N4P6-R',
-   md5('PET-3C5H7T-B8Y2N4P6-R'),
-   2, 'B20260301', TRUE, 1, 'verified',
-   NOW() - INTERVAL '3 days'),
+  -- 条形码查询（未找到）
+  (1, 'barcode', '1234567890123', NULL, NULL,
+   '未找到产品信息', NOW() - INTERVAL '1 day'),
 
-  -- ⚠️  可疑码，已被查询3次（触发 warning）
-  ('PET-4D6J8V-C9Z3Q5R7-S',
-   md5('PET-4D6J8V-C9Z3Q5R7-S'),
-   3, 'B20260215', TRUE, 3, 'warning',
-   NOW() - INTERVAL '10 days'),
+  -- 品牌跳转（SK-II）
+  (2, 'brand_redirect', 'SK-II', NULL, 'SK-II',
+   '已跳转至品牌官方验证', NOW() - INTERVAL '3 hours'),
 
-  -- 🆕 全新正品码（花瓣面膜）
-  ('PET-5F7K9W-D2X4T6U8-V',
-   md5('PET-5F7K9W-D2X4T6U8-V'),
-   4, 'B20260320', FALSE, 0, 'unused', NOW()),
-
-  -- ✅ 正品码（花瓣紧致霜）
-  ('PET-6G8M2Y-E3W5V7T9-X',
-   md5('PET-6G8M2Y-E3W5V7T9-X'),
-   5, 'B20260310', FALSE, 0, 'unused', NOW());
+  -- 品牌跳转（花西子）
+  (1, 'brand_redirect', '花西子', NULL, '花西子',
+   '已跳转至品牌官方验证', NOW() - INTERVAL '30 minutes');
 
 -- ──────────────────────────────────────────────────────────────
 -- 4. 推广活动数据（功能三：商品推广）
@@ -159,7 +147,7 @@ SELECT 'users'         AS "表名", count(*) AS "记录数" FROM users
 UNION ALL
 SELECT 'products',      count(*) FROM products
 UNION ALL
-SELECT 'anti_fake_codes', count(*) FROM anti_fake_codes
+SELECT 'verify_history', count(*) FROM verify_history
 UNION ALL
 SELECT 'promotions',    count(*) FROM promotions
 UNION ALL

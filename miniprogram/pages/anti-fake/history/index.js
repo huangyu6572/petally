@@ -57,11 +57,6 @@ Page({
       });
   },
 
-  goToResult(e) {
-    const id = e.currentTarget.dataset.id;
-    wx.navigateTo({ url: `/pages/anti-fake/result/index?analysis_id=${id}` });
-  },
-
   goToScan() {
     wx.navigateBack();
   },

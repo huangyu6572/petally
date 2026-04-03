@@ -1,22 +1,61 @@
 <!-- pages/anti-fake/scan/index.wxml -->
+<!-- v2: 条形码查询 + 品牌防伪跳转 -->
 <view class="container">
   <view class="hero">
     <image src="/assets/icons/scan-bg.png" mode="aspectFit" class="hero-img" />
-    <text class="hero-title">扫码验真伪</text>
-    <text class="hero-desc">扫描商品包装上的防伪二维码或条形码，即可验证真伪</text>
+    <text class="hero-title">化妆品验真</text>
+    <text class="hero-desc">扫描条形码查询产品备案信息，或选择品牌跳转官方防伪验证</text>
   </view>
 
+  <!-- 两个主要功能入口 -->
   <view class="actions">
-    <button class="btn-primary" bindtap="handleScan" loading="{{scanning}}">
-      <text>📷  立即扫码</text>
+    <button class="btn-primary" bindtap="handleScanBarcode" loading="{{scanning}}">
+      <text>📷  扫描条形码</text>
     </button>
+    <text class="action-hint">扫描商品条形码，查询 Open Beauty Facts 产品备案信息</text>
+
+    <button class="btn-accent" bindtap="handleBrandVerify">
+      <text>🏷️  品牌防伪验证</text>
+    </button>
+    <text class="action-hint">选择品牌，跳转品牌官方防伪验证页面</text>
+
     <button class="btn-secondary" bindtap="goToHistory">查看历史记录</button>
   </view>
 
   <view class="tips">
     <text class="tips-title">使用提示</text>
-    <text class="tip-item">· 确保二维码/条形码清晰可见</text>
-    <text class="tip-item">· 支持商品包装上所有防伪码</text>
-    <text class="tip-item">· 每次查询结果自动保存</text>
+    <text class="tip-item">· 条形码查询：数据来自开源化妆品数据库，覆盖国际主流品牌</text>
+    <text class="tip-item">· 品牌防伪：直接跳转品牌官方验证渠道，确保结果真实可靠</text>
+    <text class="tip-item">· 目前支持 {{brands.length}} 个品牌的官方防伪跳转</text>
+  </view>
+
+  <!-- 品牌选择浮层 -->
+  <view class="brand-overlay {{showBrandSelect ? 'show' : ''}}" bindtap="closeBrandSelect">
+    <view class="brand-panel" catchtap="">
+      <view class="brand-header">
+        <text class="brand-title">选择品牌</text>
+        <text class="brand-close" bindtap="closeBrandSelect">✕</text>
+      </view>
+      <input class="brand-search"
+             placeholder="搜索品牌名称..."
+             value="{{searchBrand}}"
+             bindinput="onBrandSearch" />
+      <scroll-view class="brand-list" scroll-y>
+        <view class="brand-item"
+              wx:for="{{filteredBrands}}"
+              wx:key="brand_key"
+              data-brand="{{item}}"
+              bindtap="onSelectBrand">
+          <view class="brand-info">
+            <text class="brand-name">{{item.brand_name}}</text>
+            <text class="brand-name-en">{{item.brand_name_en}}</text>
+          </view>
+          <text class="brand-type">{{item.verify_type === 'miniprogram' ? '小程序' : '官网'}}</text>
+        </view>
+        <view wx:if="{{filteredBrands.length === 0}}" class="brand-empty">
+          <text>暂无匹配品牌，建议直接前往该品牌官网查询</text>
+        </view>
+      </scroll-view>
+    </view>
   </view>
 </view>

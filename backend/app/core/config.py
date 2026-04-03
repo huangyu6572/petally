@@ -50,8 +50,6 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # === Rate Limiting ===
-    ANTI_FAKE_RATE_LIMIT_USER: int = 10      # per minute
-    ANTI_FAKE_RATE_LIMIT_IP: int = 30        # per minute
     SKIN_ANALYSIS_DAILY_LIMIT: int = 20      # per day per user
 
     class Config:
